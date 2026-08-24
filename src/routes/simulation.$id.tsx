@@ -305,7 +305,7 @@ function SimulationDetailPage() {
 
   // 시뮬레이션 진행 중(제출 전)일 때만 이탈을 차단.
   // 데모는 둘러보러 온 방문자라 이탈 설문 대상이 아니고, 차단하면 CTA 이동도 막힌다.
-  const inProgress = Boolean(sim && !submittedAt && !isOpenView);
+  const inProgress = Boolean(sim && user && !submittedAt && !isOpenView);
 
   const blocker = useBlocker({
     shouldBlockFn: () => inProgress,
@@ -356,12 +356,7 @@ function SimulationDetailPage() {
     }
 
     if (!user) {
-      setAccessReady(false);
-      navigate({
-        to: "/login",
-        search: { redirect: `/simulation/${id}` },
-        replace: true,
-      });
+      setAccessReady(true);
       return;
     }
 
@@ -395,7 +390,7 @@ function SimulationDetailPage() {
   }, [authLoading, id, isOpenView, navigate, user]);
 
   useEffect(() => {
-    if (authLoading || !accessReady || (AUTHENTICATION_ENABLED && !user && !isOpenView)) return;
+    if (authLoading || !accessReady) return;
 
     async function loadSimulation() {
       try {
@@ -679,7 +674,7 @@ function SimulationDetailPage() {
     });
   };
 
-  if (authLoading || (AUTHENTICATION_ENABLED && !user && !isOpenView) || loading) {
+  if (authLoading || loading) {
     return (
       <div className="flex min-h-dvh items-center justify-center bg-[#EEF0F3] px-4">
         <div className="w-full max-w-2xl">
@@ -1228,6 +1223,24 @@ function SimulationDetailPage() {
         toast.error("이 질문의 답변을 먼저 작성해주세요.");
         return;
       }
+
+      if (
+        AUTHENTICATION_ENABLED &&
+        !user &&
+        !isOpenView &&
+        screen.stepIndex === 0 &&
+        screen.promptIndex === 0
+      ) {
+        try {
+          window.localStorage.setItem(draftKey, JSON.stringify({ answers, screenIdx }));
+        } catch {
+          // 임시저장에 실패해도 로그인 흐름은 계속 진행한다.
+        }
+        toast("다음 질문으로 넘어가려면 로그인 또는 회원가입이 필요해요.");
+        void navigate({ to: "/login", search: { redirect: `/simulation/${id}` } });
+        return;
+      }
+
       goNext();
     };
 

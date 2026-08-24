@@ -5,25 +5,8 @@ import { getPostHogClient } from "@/lib/posthog";
 import { stripSensitiveSearchParams } from "@/lib/utils";
 
 const EXCLUDED_POSTHOG_EMAILS = new Set(["standard1414@g.skku.edu"]);
-const PAGEVIEW_CAPTURED_KEY = "ph_pageview_captured";
-
 let pageviewCapturePending = false;
-
-function hasCapturedPageview() {
-  try {
-    return window.localStorage.getItem(PAGEVIEW_CAPTURED_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function markPageviewCaptured() {
-  try {
-    window.localStorage.setItem(PAGEVIEW_CAPTURED_KEY, "1");
-  } catch {
-    // The in-memory guard still prevents duplicates during this page load.
-  }
-}
+let lastCapturedPageviewUrl: string | null = null;
 
 export function PostHogTracker() {
   const locationHref = useRouterState({ select: (state) => state.location.href });
@@ -52,7 +35,8 @@ export function PostHogTracker() {
 
   useEffect(() => {
     if (loading || isExcluded) return;
-    if (pageviewCapturePending || hasCapturedPageview()) return;
+    const currentUrl = window.location.href;
+    if (pageviewCapturePending || lastCapturedPageviewUrl === currentUrl) return;
 
     pageviewCapturePending = true;
     void getPostHogClient().then((posthog) => {
@@ -61,9 +45,9 @@ export function PostHogTracker() {
         return;
       }
 
-      markPageviewCaptured();
+      lastCapturedPageviewUrl = currentUrl;
       posthog.capture("$pageview", {
-        $current_url: stripSensitiveSearchParams(window.location.href),
+        $current_url: stripSensitiveSearchParams(currentUrl),
         route: window.location.pathname,
       });
     });

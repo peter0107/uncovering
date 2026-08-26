@@ -159,7 +159,11 @@ const expertSimulationInputSchema = z.object({
   jobTitle: z.string().trim().min(1).max(100),
   cardBackgroundColor: hexColorSchema.default("#ffffff"),
   cardTextColor: hexColorSchema.default("#18181b"),
-  profileImageUrl: z.string().url().optional().nullable().default(""),
+  profileImageUrl: z
+    .union([z.string().url(), z.literal("")])
+    .optional()
+    .nullable()
+    .default(""),
   modelAnswer: z.string().optional().default(""),
   aiFeedback: z.string().optional().default(""),
 });

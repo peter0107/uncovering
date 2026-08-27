@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate, useBlocker } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import { CheckCircle2, Clock, Info, Send, X, MessageCircle } from "lucide-react";
@@ -6,20 +6,10 @@ import { RichTextContent, RichTextEditor } from "@/components/RichTextEditor";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  AlertDialog,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
 import { SimulationShell, MaterialTabStrip, MaterialBody } from "@/components/SimulationShell";
 import { cn } from "@/lib/utils";
 import { capturePostHogEvent, consumeSimulationEntry } from "@/lib/posthog";
-import { submitSimulationExitSurvey } from "@/lib/simulation-exit-surveys.functions";
 import { useAuth } from "@/hooks/use-auth";
 import { AUTHENTICATION_ENABLED } from "@/lib/auth-features";
 import { supabase } from "@/integrations/supabase/client";
@@ -77,6 +67,21 @@ type SimulationDetail = {
   company_is_partner: boolean;
 };
 
+const CHIP_JAPAN_CONTENT_MARKETER_VIDEO = "/videos/chip-japan-content-marketer.mp4";
+
+function isChipJapanContentMarketerSimulation(simulation: SimulationDetail) {
+  const searchableText = [
+    simulation.title,
+    simulation.company_name,
+    simulation.role_label ?? "",
+    simulation.expert_job_title ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  return ["chip", "일본", "콘텐츠", "마케터"].every((keyword) => searchableText.includes(keyword));
+}
+
 const MAX_ANSWER_LENGTH = 1000;
 
 // 제출 시 난이도 자기평가 5단계 (DB에는 1~5 정수로 저장)
@@ -87,16 +92,6 @@ const DIFFICULTY_OPTIONS = [
   { value: 4, label: "어려웠어요" },
   { value: 5, label: "매우 어려웠어요" },
 ] as const;
-const EXIT_SURVEY_OPTIONS = [
-  { value: "too_difficult", label: "난이도가 너무 높다" },
-  { value: "too_long", label: "글이 너무 길다" },
-  { value: "too_much_effort", label: "귀찮다" },
-  { value: "not_fun", label: "재미없다" },
-  { value: "other", label: "기타" },
-] as const;
-
-type ExitSurveyReason = (typeof EXIT_SURVEY_OPTIONS)[number]["value"];
-
 // 화면 배열 — 위저드 모델(steps)에서 파생. intro/submit은 model.steps 밖의 고정 화면.
 type Screen =
   | { kind: "intro" }
@@ -254,9 +249,6 @@ function SimulationDetailPage() {
   const [consent, setConsent] = useState<boolean | null>(null);
   const [difficultyRating, setDifficultyRating] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [exitSurveyReason, setExitSurveyReason] = useState<ExitSurveyReason | null>(null);
-  const [exitSurveyOtherText, setExitSurveyOtherText] = useState("");
-  const [exitSurveySubmitting, setExitSurveySubmitting] = useState(false);
   const [submittedAt, setSubmittedAt] = useState<Date | null>(null);
   const [submittedSubmissionId, setSubmittedSubmissionId] = useState<string | null>(null);
   const [startedAt] = useState(() => new Date());
@@ -302,16 +294,6 @@ function SimulationDetailPage() {
       setChatSending(false);
     }
   };
-
-  // 시뮬레이션 진행 중(제출 전)일 때만 이탈을 차단.
-  // 데모는 둘러보러 온 방문자라 이탈 설문 대상이 아니고, 차단하면 CTA 이동도 막힌다.
-  const inProgress = Boolean(sim && user && !submittedAt && !isOpenView);
-
-  const blocker = useBlocker({
-    shouldBlockFn: () => inProgress,
-    enableBeforeUnload: inProgress,
-    withResolver: true,
-  });
 
   const wizardModel: WizardModel | null = useMemo(
     () =>
@@ -863,130 +845,6 @@ function SimulationDetailPage() {
     </div>
   );
 
-  const resetExitFlow = () => {
-    trackSimulationAction("simulation_exit_cancelled");
-    setExitSurveyReason(null);
-    setExitSurveyOtherText("");
-    blocker.reset?.();
-  };
-
-  const submitExitSurvey = async () => {
-    const otherText = exitSurveyOtherText.trim();
-    if (!exitSurveyReason || (exitSurveyReason === "other" && !otherText) || exitSurveySubmitting) {
-      return;
-    }
-
-    setExitSurveySubmitting(true);
-    const selectedOption = EXIT_SURVEY_OPTIONS.find((option) => option.value === exitSurveyReason);
-    const currentScreen = screens[screenIdx];
-    const surveyData = {
-      simulationId: sim.id,
-      reason: exitSurveyReason,
-      otherText: exitSurveyReason === "other" ? otherText : "",
-      stepIndex: currentScreen ? screenProgressStep(currentScreen, model.steps.length) : 1,
-      totalSteps: model.steps.length,
-      answeredCount: Object.values(answers).filter((answer) => Boolean(answer.trim())).length,
-      elapsedSeconds: Math.max(0, Math.round((Date.now() - startedAt.getTime()) / 1000)),
-    };
-
-    try {
-      await submitSimulationExitSurvey({ data: surveyData });
-    } catch (error) {
-      console.error("[Simulation exit survey database]", error);
-      toast.error("설문을 저장하지 못했어요. 다시 시도해 주세요.");
-      setExitSurveySubmitting(false);
-      return;
-    }
-
-    void capturePostHogEvent(isDemo ? "trial_simulation_exit_survey_submitted" : "simulation_exit_survey_submitted", {
-      reason: exitSurveyReason,
-      reason_label: selectedOption?.label,
-      has_other_text: Boolean(surveyData.otherText),
-      simulation_id: sim.id,
-      simulation_name: sim.title,
-      simulation_source: sim.simulation_source,
-      step_index: surveyData.stepIndex,
-      total_steps: surveyData.totalSteps,
-      answered_count: surveyData.answeredCount,
-      elapsed_seconds: surveyData.elapsedSeconds,
-      simulation_context: isDemo ? "trial_preview" : "standard",
-    }).catch((error) => console.error("[Simulation exit survey analytics]", error));
-
-    setExitSurveySubmitting(false);
-    blocker.proceed?.();
-  };
-
-  const blockerDialog = (
-    <AlertDialog open={blocker.status === "blocked"}>
-      <AlertDialogContent className="data-[state=closed]:!animate-none data-[state=open]:!animate-none">
-        <AlertDialogHeader>
-          <AlertDialogTitle>그만두려는 이유를 알려주세요</AlertDialogTitle>
-          <AlertDialogDescription>
-            시뮬레이션을 개선하는 데 참고할게요. 가장 가까운 이유 하나를 선택해 주세요.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <div className="grid gap-2 py-2" role="radiogroup" aria-label="시뮬레이션 이탈 이유">
-          {EXIT_SURVEY_OPTIONS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              role="radio"
-              aria-checked={exitSurveyReason === option.value}
-              onClick={() => {
-                setExitSurveyReason(option.value);
-                trackSimulationAction("simulation_exit_reason_selected", { exit_reason: option.value });
-              }}
-              className={cn(
-                "rounded-md border px-4 py-3 text-left text-sm transition-colors",
-                exitSurveyReason === option.value
-                  ? "border-zinc-900 bg-zinc-900 text-white"
-                  : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-400",
-              )}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-        {exitSurveyReason === "other" && (
-          <div className="space-y-2">
-            <label htmlFor="exit-survey-other" className="text-sm font-medium text-zinc-800">
-              기타 이유
-            </label>
-            <Textarea
-              id="exit-survey-other"
-              value={exitSurveyOtherText}
-              onChange={(event) => setExitSurveyOtherText(event.target.value.slice(0, 300))}
-              maxLength={300}
-              rows={3}
-              autoFocus
-              placeholder="그만두려는 이유를 간단히 적어주세요."
-              className="resize-none"
-            />
-            <p className="text-right text-xs text-zinc-400">{exitSurveyOtherText.length}/300</p>
-          </div>
-        )}
-        <AlertDialogFooter>
-          <AlertDialogCancel onClick={resetExitFlow}>계속 진행하기</AlertDialogCancel>
-          <Button
-            type="button"
-            disabled={
-              !exitSurveyReason ||
-              (exitSurveyReason === "other" && !exitSurveyOtherText.trim()) ||
-              exitSurveySubmitting
-            }
-            onClick={() => {
-              trackSimulationAction("simulation_exit_submit_clicked");
-              void submitExitSurvey();
-            }}
-            className="bg-zinc-900 text-white hover:bg-zinc-700"
-          >
-            {exitSurveySubmitting ? "저장 중..." : "선택하고 나가기"}
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  );
-
   // ponytail: AI 어시스트는 새 화면 셸에서 숨김 — 되살리려면 아래 렌더 트리에 {aiPanel} 추가
   const aiPanel = (
     <>
@@ -1160,16 +1018,32 @@ function SimulationDetailPage() {
   } else if (screen.kind === "situation") {
     primaryLabel = nextScreen?.kind === "materials" ? "자료 확인하러 가기 →" : "다음 →";
     onPrimary = goNext;
+    const showSituationVideo =
+      screen.stepIndex === 0 && isChipJapanContentMarketerSimulation(sim);
     mainContent = (
       <div className="mx-auto w-full max-w-2xl px-5 py-8 sm:px-12">
-        <p className="text-xs text-zinc-500">상황</p>
-        <div className="mt-2 rounded-xl border border-zinc-200 bg-white p-6">
-          <RichTextContent
-            value={screen.markdown}
-            compact
-            className="prose prose-sm prose-zinc max-w-none"
-          />
-        </div>
+        <p className="text-xs text-zinc-500">{showSituationVideo ? "상황 영상" : "상황"}</p>
+        {showSituationVideo ? (
+          <div className="mt-2 overflow-hidden rounded-xl border border-zinc-200 bg-black">
+            <video
+              className="aspect-video w-full object-contain"
+              controls
+              playsInline
+              preload="metadata"
+            >
+              <source src={CHIP_JAPAN_CONTENT_MARKETER_VIDEO} type="video/mp4" />
+              이 브라우저에서는 상황 영상을 재생할 수 없습니다.
+            </video>
+          </div>
+        ) : (
+          <div className="mt-2 rounded-xl border border-zinc-200 bg-white p-6">
+            <RichTextContent
+              value={screen.markdown}
+              compact
+              className="prose prose-sm prose-zinc max-w-none"
+            />
+          </div>
+        )}
         <div className="mt-4 rounded-xl border border-dashed border-zinc-300 p-5">
           <p className="text-xs font-semibold text-zinc-500">이번 시뮬레이션에서 할 일</p>
           <p className="mt-1.5 text-sm text-zinc-700">
@@ -1402,7 +1276,6 @@ function SimulationDetailPage() {
       onHomeClick={() => trackSimulationAction("simulation_home_clicked")}
       logoHref={isDemo ? "/lp/trial" : "/"}
     >
-      {blockerDialog}
       {mainContent}
       {sidebarTabs.length > 0 && (
         <Drawer

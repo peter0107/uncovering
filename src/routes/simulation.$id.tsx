@@ -1027,6 +1027,8 @@ function SimulationDetailPage() {
           <div className="mt-2 overflow-hidden rounded-xl border border-zinc-200 bg-black">
             <video
               className="aspect-video w-full object-contain"
+              autoPlay
+              muted
               controls
               playsInline
               preload="metadata"
